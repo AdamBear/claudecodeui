@@ -85,7 +85,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
               projectPath: selectedProjectRef.current.fullPath || selectedProjectRef.current.path,
               sessionId: isPlainShellRef.current ? null : selectedSessionRef.current?.id,
               hasSession: isPlainShellRef.current ? false : !!selectedSessionRef.current,
-              provider: isPlainShellRef.current ? 'plain-shell' : (selectedSessionRef.current?.__provider || 'claude'),
+              provider: isPlainShellRef.current ? 'plain-shell' : (selectedSessionRef.current?.__provider || localStorage.getItem('selected-provider') || 'claude'),
               cols: terminal.current.cols,
               rows: terminal.current.rows,
               initialCommand: initialCommandRef.current,
@@ -153,6 +153,10 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
 
   const disconnectFromShell = useCallback(() => {
     if (ws.current) {
+      // Send terminate signal to backend to ensure process is killed
+      if (ws.current.readyState === WebSocket.OPEN) {
+        ws.current.send(JSON.stringify({ type: 'terminate' }));
+      }
       ws.current.close();
       ws.current = null;
     }
@@ -296,7 +300,7 @@ function Shell({ selectedProject, selectedSession, initialCommand, isPlainShell 
               data: text
             }));
           }
-        }).catch(() => {});
+        }).catch(() => { });
         return false;
       }
 

@@ -60,6 +60,8 @@ import mime from 'mime-types';
 import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
+import { spawnIflow, abortIflowSession, isIflowSessionActive, getActiveIflowSessions } from './iflow-cli.js';
+import { spawnCrush, abortCrushSession, isCrushSessionActive, getActiveCrushSessions } from './crush-cli.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
 import mcpRoutes from './routes/mcp.js';
@@ -216,10 +218,10 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Public health check endpoint (no authentication required)
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString()
-  });
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString()
+    });
 });
 
 // Optional API key validation (if configured)
@@ -267,17 +269,17 @@ app.use(express.static(path.join(__dirname, '../public')));
 // Static files served after API routes
 // Add cache control: HTML files should not be cached, but assets can be cached
 app.use(express.static(path.join(__dirname, '../dist'), {
-  setHeaders: (res, filePath) => {
-    if (filePath.endsWith('.html')) {
-      // Prevent HTML caching to avoid service worker issues after builds
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-    } else if (filePath.match(/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico)$/)) {
-      // Cache static assets for 1 year (they have hashed names)
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) {
+            // Prevent HTML caching to avoid service worker issues after builds
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+        } else if (filePath.match(/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico)$/)) {
+            // Cache static assets for 1 year (they have hashed names)
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
     }
-  }
 }));
 
 // API Routes (protected)
@@ -373,13 +375,13 @@ app.get('/api/projects/:projectName/sessions/:sessionId/messages', authenticateT
     try {
         const { projectName, sessionId } = req.params;
         const { limit, offset } = req.query;
-        
+
         // Parse limit and offset if provided
         const parsedLimit = limit ? parseInt(limit, 10) : null;
         const parsedOffset = offset ? parseInt(offset, 10) : 0;
-        
+
         const result = await getSessionMessages(projectName, sessionId, parsedLimit, parsedOffset);
-        
+
         // Handle both old and new response formats
         if (Array.isArray(result)) {
             // Backward compatibility: no pagination parameters were provided
@@ -447,32 +449,32 @@ app.post('/api/projects/create', authenticateToken, async (req, res) => {
 });
 
 // Browse filesystem endpoint for project suggestions - uses existing getFileTree
-app.get('/api/browse-filesystem', authenticateToken, async (req, res) => {    
+app.get('/api/browse-filesystem', authenticateToken, async (req, res) => {
     try {
         const { path: dirPath } = req.query;
-        
+
         // Default to home directory if no path provided
         const homeDir = os.homedir();
         let targetPath = dirPath ? dirPath.replace('~', homeDir) : homeDir;
-        
+
         // Resolve and normalize the path
         targetPath = path.resolve(targetPath);
-        
+
         // Security check - ensure path is accessible
         try {
             await fs.promises.access(targetPath);
             const stats = await fs.promises.stat(targetPath);
-            
+
             if (!stats.isDirectory()) {
                 return res.status(400).json({ error: 'Path is not a directory' });
             }
         } catch (err) {
             return res.status(404).json({ error: 'Directory not accessible' });
         }
-        
+
         // Use existing getFileTree function with shallow depth (only direct children)
         const fileTree = await getFileTree(targetPath, 1, 0, false); // maxDepth=1, showHidden=false
-        
+
         // Filter only directories and format for suggestions
         const directories = fileTree
             .filter(item => item.type === 'directory')
@@ -482,24 +484,24 @@ app.get('/api/browse-filesystem', authenticateToken, async (req, res) => {
                 type: 'directory'
             }))
             .slice(0, 20); // Limit results
-            
+
         // Add common directories if browsing home directory
         const suggestions = [];
         if (targetPath === homeDir) {
             const commonDirs = ['Desktop', 'Documents', 'Projects', 'Development', 'Dev', 'Code', 'workspace'];
             const existingCommon = directories.filter(dir => commonDirs.includes(dir.name));
             const otherDirs = directories.filter(dir => !commonDirs.includes(dir.name));
-            
+
             suggestions.push(...existingCommon, ...otherDirs);
         } else {
             suggestions.push(...directories);
         }
-        
-        res.json({ 
+
+        res.json({
             path: targetPath,
-            suggestions: suggestions 
+            suggestions: suggestions
         });
-        
+
     } catch (error) {
         console.error('Error browsing filesystem:', error);
         res.status(500).json({ error: 'Failed to browse filesystem' });
@@ -734,6 +736,14 @@ function handleChatConnection(ws) {
                     resume: true,
                     cwd: data.options?.cwd
                 }, ws);
+            } else if (data.type === 'iflow-command') {
+                console.log('[DEBUG] iFlow message:', data.command || '[Continue/Resume]');
+                console.log('📁 Project:', data.options?.cwd || 'Unknown');
+                await spawnIflow(data.command, data.options, ws);
+            } else if (data.type === 'crush-command') {
+                console.log('[DEBUG] Crush message:', data.command || '[Continue/Resume]');
+                console.log('📁 Project:', data.options?.cwd || 'Unknown');
+                await spawnCrush(data.command, data.options, ws);
             } else if (data.type === 'abort-session') {
                 console.log('[DEBUG] Abort session request:', data.sessionId);
                 const provider = data.provider || 'claude';
@@ -741,6 +751,10 @@ function handleChatConnection(ws) {
 
                 if (provider === 'cursor') {
                     success = abortCursorSession(data.sessionId);
+                } else if (provider === 'iflow') {
+                    success = abortIflowSession(data.sessionId);
+                } else if (provider === 'crush') {
+                    success = abortCrushSession(data.sessionId);
                 } else {
                     // Use Claude Agents SDK
                     success = await abortClaudeSDKSession(data.sessionId);
@@ -769,6 +783,10 @@ function handleChatConnection(ws) {
 
                 if (provider === 'cursor') {
                     isActive = isCursorSessionActive(sessionId);
+                } else if (provider === 'iflow') {
+                    isActive = isIflowSessionActive(sessionId);
+                } else if (provider === 'crush') {
+                    isActive = isCrushSessionActive(sessionId);
                 } else {
                     // Use Claude Agents SDK
                     isActive = isClaudeSDKSessionActive(sessionId);
@@ -784,7 +802,9 @@ function handleChatConnection(ws) {
                 // Get all currently active sessions
                 const activeSessions = {
                     claude: getActiveClaudeSDKSessions(),
-                    cursor: getActiveCursorSessions()
+                    cursor: getActiveCursorSessions(),
+                    iflow: getActiveIflowSessions(),
+                    crush: getActiveCrushSessions()
                 };
                 ws.send(JSON.stringify({
                     type: 'active-sessions',
@@ -831,29 +851,39 @@ function handleShellConnection(ws) {
 
                 const existingSession = ptySessionsMap.get(ptySessionKey);
                 if (existingSession) {
-                    console.log('♻️  Reconnecting to existing PTY session:', ptySessionKey);
-                    shellProcess = existingSession.pty;
+                    // Check if the provider matches
+                    if (existingSession.provider !== provider) {
+                        console.log(`🔄 Provider changed from ${existingSession.provider} to ${provider}. Killing old session.`);
+                        if (existingSession.pty && existingSession.pty.kill) {
+                            existingSession.pty.kill();
+                        }
+                        ptySessionsMap.delete(ptySessionKey);
+                        // Fall through to create new session
+                    } else {
+                        console.log('♻️  Reconnecting to existing PTY session:', ptySessionKey);
+                        shellProcess = existingSession.pty;
 
-                    clearTimeout(existingSession.timeoutId);
+                        clearTimeout(existingSession.timeoutId);
 
-                    ws.send(JSON.stringify({
-                        type: 'output',
-                        data: `\x1b[36m[Reconnected to existing session]\x1b[0m\r\n`
-                    }));
+                        ws.send(JSON.stringify({
+                            type: 'output',
+                            data: `\x1b[36m[Reconnected to existing session]\x1b[0m\r\n`
+                        }));
 
-                    if (existingSession.buffer && existingSession.buffer.length > 0) {
-                        console.log(`📜 Sending ${existingSession.buffer.length} buffered messages`);
-                        existingSession.buffer.forEach(bufferedData => {
-                            ws.send(JSON.stringify({
-                                type: 'output',
-                                data: bufferedData
-                            }));
-                        });
+                        if (existingSession.buffer && existingSession.buffer.length > 0) {
+                            console.log(`📜 Sending ${existingSession.buffer.length} buffered messages`);
+                            existingSession.buffer.forEach(bufferedData => {
+                                ws.send(JSON.stringify({
+                                    type: 'output',
+                                    data: bufferedData
+                                }));
+                            });
+                        }
+
+                        existingSession.ws = ws;
+
+                        return;
                     }
-
-                    existingSession.ws = ws;
-
-                    return;
                 }
 
                 console.log('[INFO] Starting shell in:', projectPath);
@@ -868,7 +898,7 @@ function handleShellConnection(ws) {
                 if (isPlainShell) {
                     welcomeMsg = `\x1b[36mStarting terminal in: ${projectPath}\x1b[0m\r\n`;
                 } else {
-                    const providerName = provider === 'cursor' ? 'Cursor' : 'Claude';
+                    const providerName = provider === 'cursor' ? 'Cursor' : (provider === 'iflow' ? 'iFlow' : (provider === 'crush' ? 'Crush' : 'Claude'));
                     welcomeMsg = hasSession ?
                         `\x1b[36mResuming ${providerName} session ${sessionId} in: ${projectPath}\x1b[0m\r\n` :
                         `\x1b[36mStarting new ${providerName} session in: ${projectPath}\x1b[0m\r\n`;
@@ -903,6 +933,20 @@ function handleShellConnection(ws) {
                             } else {
                                 shellCommand = `cd "${projectPath}" && cursor-agent`;
                             }
+                        }
+                    } else if (provider === 'iflow') {
+                        // Use iflow command
+                        if (os.platform() === 'win32') {
+                            shellCommand = `Set-Location -Path "${projectPath}"; iflow`;
+                        } else {
+                            shellCommand = `cd "${projectPath}" && iflow`;
+                        }
+                    } else if (provider === 'crush') {
+                        // Use crush command
+                        if (os.platform() === 'win32') {
+                            shellCommand = `Set-Location -Path "${projectPath}"; crush`;
+                        } else {
+                            shellCommand = `cd "${projectPath}" && crush`;
                         }
                     } else {
                         // Use claude command (default) or initialCommand if provided
@@ -957,7 +1001,8 @@ function handleShellConnection(ws) {
                         buffer: [],
                         timeoutId: null,
                         projectPath,
-                        sessionId
+                        sessionId,
+                        provider // Store provider to allow switching later
                     });
 
                     // Handle data output
@@ -1058,6 +1103,12 @@ function handleShellConnection(ws) {
                     console.log('Terminal resize requested:', data.cols, 'x', data.rows);
                     shellProcess.resize(data.cols, data.rows);
                 }
+            } else if (data.type === 'terminate') {
+                console.log('💀 Terminate requested for session:', ptySessionKey);
+                if (shellProcess) {
+                    shellProcess.kill();
+                }
+                // Cleanup will happen in onExit handler
             }
         } catch (error) {
             console.error('[ERROR] Shell WebSocket error:', error.message);
@@ -1330,118 +1381,118 @@ app.post('/api/projects/:projectName/upload-images', authenticateToken, async (r
 
 // Get token usage for a specific session
 app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authenticateToken, async (req, res) => {
-  try {
-    const { projectName, sessionId } = req.params;
-    const homeDir = os.homedir();
-
-    // Extract actual project path
-    let projectPath;
     try {
-      projectPath = await extractProjectDirectory(projectName);
-    } catch (error) {
-      console.error('Error extracting project directory:', error);
-      return res.status(500).json({ error: 'Failed to determine project path' });
-    }
+        const { projectName, sessionId } = req.params;
+        const homeDir = os.homedir();
 
-    // Construct the JSONL file path
-    // Claude stores session files in ~/.claude/projects/[encoded-project-path]/[session-id].jsonl
-    // The encoding replaces /, spaces, ~, and _ with -
-    const encodedPath = projectPath.replace(/[\\/:\s~_]/g, '-');
-    const projectDir = path.join(homeDir, '.claude', 'projects', encodedPath);
-
-    // Allow only safe characters in sessionId
-    const safeSessionId = String(sessionId).replace(/[^a-zA-Z0-9._-]/g, '');
-    if (!safeSessionId) {
-      return res.status(400).json({ error: 'Invalid sessionId' });
-    }
-    const jsonlPath = path.join(projectDir, `${safeSessionId}.jsonl`);
-
-    // Constrain to projectDir
-    const rel = path.relative(path.resolve(projectDir), path.resolve(jsonlPath));
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      return res.status(400).json({ error: 'Invalid path' });
-    }
-
-    // Read and parse the JSONL file
-    let fileContent;
-    try {
-      fileContent = await fsPromises.readFile(jsonlPath, 'utf8');
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        return res.status(404).json({ error: 'Session file not found', path: jsonlPath });
-      }
-      throw error; // Re-throw other errors to be caught by outer try-catch
-    }
-    const lines = fileContent.trim().split('\n');
-
-    const parsedContextWindow = parseInt(process.env.CONTEXT_WINDOW, 10);
-    const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160000;
-    let inputTokens = 0;
-    let cacheCreationTokens = 0;
-    let cacheReadTokens = 0;
-
-    // Find the latest assistant message with usage data (scan from end)
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const entry = JSON.parse(lines[i]);
-
-        // Only count assistant messages which have usage data
-        if (entry.type === 'assistant' && entry.message?.usage) {
-          const usage = entry.message.usage;
-
-          // Use token counts from latest assistant message only
-          inputTokens = usage.input_tokens || 0;
-          cacheCreationTokens = usage.cache_creation_input_tokens || 0;
-          cacheReadTokens = usage.cache_read_input_tokens || 0;
-
-          break; // Stop after finding the latest assistant message
+        // Extract actual project path
+        let projectPath;
+        try {
+            projectPath = await extractProjectDirectory(projectName);
+        } catch (error) {
+            console.error('Error extracting project directory:', error);
+            return res.status(500).json({ error: 'Failed to determine project path' });
         }
-      } catch (parseError) {
-        // Skip lines that can't be parsed
-        continue;
-      }
+
+        // Construct the JSONL file path
+        // Claude stores session files in ~/.claude/projects/[encoded-project-path]/[session-id].jsonl
+        // The encoding replaces /, spaces, ~, and _ with -
+        const encodedPath = projectPath.replace(/[\\/:\s~_]/g, '-');
+        const projectDir = path.join(homeDir, '.claude', 'projects', encodedPath);
+
+        // Allow only safe characters in sessionId
+        const safeSessionId = String(sessionId).replace(/[^a-zA-Z0-9._-]/g, '');
+        if (!safeSessionId) {
+            return res.status(400).json({ error: 'Invalid sessionId' });
+        }
+        const jsonlPath = path.join(projectDir, `${safeSessionId}.jsonl`);
+
+        // Constrain to projectDir
+        const rel = path.relative(path.resolve(projectDir), path.resolve(jsonlPath));
+        if (rel.startsWith('..') || path.isAbsolute(rel)) {
+            return res.status(400).json({ error: 'Invalid path' });
+        }
+
+        // Read and parse the JSONL file
+        let fileContent;
+        try {
+            fileContent = await fsPromises.readFile(jsonlPath, 'utf8');
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return res.status(404).json({ error: 'Session file not found', path: jsonlPath });
+            }
+            throw error; // Re-throw other errors to be caught by outer try-catch
+        }
+        const lines = fileContent.trim().split('\n');
+
+        const parsedContextWindow = parseInt(process.env.CONTEXT_WINDOW, 10);
+        const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160000;
+        let inputTokens = 0;
+        let cacheCreationTokens = 0;
+        let cacheReadTokens = 0;
+
+        // Find the latest assistant message with usage data (scan from end)
+        for (let i = lines.length - 1; i >= 0; i--) {
+            try {
+                const entry = JSON.parse(lines[i]);
+
+                // Only count assistant messages which have usage data
+                if (entry.type === 'assistant' && entry.message?.usage) {
+                    const usage = entry.message.usage;
+
+                    // Use token counts from latest assistant message only
+                    inputTokens = usage.input_tokens || 0;
+                    cacheCreationTokens = usage.cache_creation_input_tokens || 0;
+                    cacheReadTokens = usage.cache_read_input_tokens || 0;
+
+                    break; // Stop after finding the latest assistant message
+                }
+            } catch (parseError) {
+                // Skip lines that can't be parsed
+                continue;
+            }
+        }
+
+        // Calculate total context usage (excluding output_tokens, as per ccusage)
+        const totalUsed = inputTokens + cacheCreationTokens + cacheReadTokens;
+
+        res.json({
+            used: totalUsed,
+            total: contextWindow,
+            breakdown: {
+                input: inputTokens,
+                cacheCreation: cacheCreationTokens,
+                cacheRead: cacheReadTokens
+            }
+        });
+    } catch (error) {
+        console.error('Error reading session token usage:', error);
+        res.status(500).json({ error: 'Failed to read session token usage' });
     }
-
-    // Calculate total context usage (excluding output_tokens, as per ccusage)
-    const totalUsed = inputTokens + cacheCreationTokens + cacheReadTokens;
-
-    res.json({
-      used: totalUsed,
-      total: contextWindow,
-      breakdown: {
-        input: inputTokens,
-        cacheCreation: cacheCreationTokens,
-        cacheRead: cacheReadTokens
-      }
-    });
-  } catch (error) {
-    console.error('Error reading session token usage:', error);
-    res.status(500).json({ error: 'Failed to read session token usage' });
-  }
 });
 
 // Serve React app for all other routes (excluding static files)
 app.get('*', (req, res) => {
-  // Skip requests for static assets (files with extensions)
-  if (path.extname(req.path)) {
-    return res.status(404).send('Not found');
-  }
+    // Skip requests for static assets (files with extensions)
+    if (path.extname(req.path)) {
+        return res.status(404).send('Not found');
+    }
 
-  // Only serve index.html for HTML routes, not for static assets
-  // Static assets should already be handled by express.static middleware above
-  const indexPath = path.join(__dirname, '../dist/index.html');
+    // Only serve index.html for HTML routes, not for static assets
+    // Static assets should already be handled by express.static middleware above
+    const indexPath = path.join(__dirname, '../dist/index.html');
 
-  // Check if dist/index.html exists (production build available)
-  if (fs.existsSync(indexPath)) {
-    // Set no-cache headers for HTML to prevent service worker issues
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    res.sendFile(indexPath);
-  } else {
-    // In development, redirect to Vite dev server only if dist doesn't exist
-    res.redirect(`http://localhost:${process.env.VITE_PORT || 5173}`);
-  }
+    // Check if dist/index.html exists (production build available)
+    if (fs.existsSync(indexPath)) {
+        // Set no-cache headers for HTML to prevent service worker issues
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.sendFile(indexPath);
+    } else {
+        // In development, redirect to Vite dev server only if dist doesn't exist
+        res.redirect(`http://localhost:${process.env.VITE_PORT || 5173}`);
+    }
 });
 
 // Helper function to convert permissions to rwx format

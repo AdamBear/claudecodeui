@@ -220,18 +220,6 @@ After installing it you should be able to enable it from the Settings
 #### Project Management
 The UI automatically discovers Claude Code projects from `~/.claude/projects/` and provides:
 - **Visual Project Browser** - All available projects with metadata and session counts
-- **Project Actions** - Rename, delete, and organize projects
-- **Smart Navigation** - Quick access to recent projects and sessions
-- **MCP support** - Add your own MCP servers through the UI 
-
-#### Chat Interface
-- **Use responsive chat or Claude Code/Cursor CLI** - You can either use the adapted chat interface or use the shell button to connect to your selected CLI. 
-- **Real-time Communication** - Stream responses from Claude with WebSocket connection
-- **Session Management** - Resume previous conversations or start fresh sessions
-- **Message History** - Complete conversation history with timestamps and metadata
-- **Multi-format Support** - Text, code blocks, and file references
-
-#### File Explorer & Editor
 - **Interactive File Tree** - Browse project structure with expand/collapse navigation
 - **Live File Editing** - Read, modify, and save files directly in the interface
 - **Syntax Highlighting** - Support for multiple programming languages
